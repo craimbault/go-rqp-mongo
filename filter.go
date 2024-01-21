@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type StateOR byte
@@ -55,6 +58,8 @@ func detectType(name string, validations Validations) string {
 					return "int"
 				case "bool", "b":
 					return "bool"
+				case "mongoid":
+					return "mongoid"
 				default:
 					return "string"
 				}
@@ -93,6 +98,10 @@ func newFilter(rawKey string, value string, delimiter string, validations Valida
 
 	// detect type by key names in validations
 	valueType := detectType(f.Name, validations)
+
+	if valueType == "mongoid" {
+		f.Name = "_id"
+	}
 
 	if err := f.parseValue(valueType, value, delimiter); err != nil {
 		return nil, err
@@ -135,7 +144,8 @@ func (f *Filter) validate(validate ValidationFunc) error {
 }
 
 // parseKey parses key to set f.Name and f.Method
-//   id[eq] -> f.Name = "id", f.Method = EQ
+//
+//	id[eq] -> f.Name = "id", f.Method = EQ
 func (f *Filter) parseKey(key string) error {
 
 	// default Method is EQ
@@ -167,7 +177,10 @@ func (f *Filter) parseKey(key string) error {
 // parseValue parses value depends on its type
 func (f *Filter) parseValue(valueType string, value string, delimiter string) error {
 
-	var list []string
+	var (
+		list []string
+		err  error
+	)
 
 	if strings.Contains(value, delimiter) && (f.Method == IN || f.Method == NIN) {
 		list = strings.Split(value, delimiter)
@@ -177,23 +190,16 @@ func (f *Filter) parseValue(valueType string, value string, delimiter string) er
 
 	switch valueType {
 	case "int":
-		err := f.setInt(list)
-		if err != nil {
-			return err
-		}
+		err = f.setInt(list)
 	case "bool":
-		err := f.setBool(list)
-		if err != nil {
-			return err
-		}
+		err = f.setBool(list)
+	case "mongoid":
+		err = f.setMongoId(list)
 	default: // str, string and all other unknown types will handle as string
-		err := f.setString(list)
-		if err != nil {
-			return err
-		}
+		err = f.setString(list)
 	}
 
-	return nil
+	return err
 }
 
 // Where returns condition expression
@@ -219,6 +225,66 @@ func (f *Filter) Where() (string, error) {
 	default:
 		return exp, ErrUnknownMethod
 	}
+}
+
+func (f *Filter) WhereMongo() (interface{}, error) {
+	var (
+		filterElement interface{}
+		err           error = nil
+	)
+
+	switch f.Method {
+	case EQ:
+		filterElement = f.Value
+	case NE, GT, LT, GTE, LTE:
+		filterElement = bson.M{"$" + strings.ToLower(string(f.Method)): f.Value}
+	case LIKE, ILIKE, NLIKE, NILIKE:
+		pattern := f.Value.(string)
+		if strings.HasPrefix(pattern, "*") {
+			pattern = pattern[1:]
+		} else {
+			pattern = "^" + pattern
+		}
+
+		if strings.HasSuffix(pattern, "*") {
+			pattern = pattern[:len(pattern)-1]
+		} else {
+			pattern = pattern + "$"
+		}
+
+		regexFilter := primitive.Regex{Pattern: pattern}
+		if f.Method == ILIKE || f.Method == NILIKE {
+			regexFilter.Options += "i"
+		}
+		regexBson := bson.M{"$regex": regexFilter}
+
+		if f.Method == NLIKE || f.Method == NILIKE {
+			filterElement = bson.M{"$not": regexBson}
+		} else {
+			filterElement = regexBson
+		}
+	case NOT:
+		if f.Value == NULL {
+			filterElement = bson.M{"$exists": true}
+		} else {
+			filterElement = bson.M{"$ne": f.Value}
+		}
+	case IS:
+		if f.Value == NULL {
+			filterElement = bson.M{"$exists": false}
+		} else {
+			err = ErrMethodNotAllowed
+		}
+	case IN, NIN:
+		values, _ := f.Args()
+		bsonValues := bson.A{}
+		bsonValues = append(bsonValues, values...)
+		filterElement = bson.M{"$" + strings.ToLower(string(f.Method)): bsonValues}
+	default:
+		err = ErrUnknownMethod
+	}
+
+	return filterElement, err
 }
 
 // Args returns arguments slice depending on filter condition
@@ -282,6 +348,34 @@ func (f *Filter) setInt(list []string) error {
 			intSlice[i] = v
 		}
 		f.Value = intSlice
+	}
+	return nil
+}
+
+func (f *Filter) setMongoId(list []string) error {
+	if len(list) == 1 {
+		if f.Method != EQ {
+			return ErrMethodNotAllowed
+		}
+
+		mid, err := primitive.ObjectIDFromHex(list[0])
+		if err != nil {
+			return ErrBadFormat
+		}
+		f.Value = mid
+	} else {
+		if f.Method != IN && f.Method != NIN {
+			return ErrMethodNotAllowed
+		}
+		midSlice := make([]primitive.ObjectID, len(list))
+		for i, s := range list {
+			v, err := primitive.ObjectIDFromHex(s)
+			if err != nil {
+				return ErrBadFormat
+			}
+			midSlice[i] = v
+		}
+		f.Value = midSlice
 	}
 	return nil
 }

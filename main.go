@@ -1,12 +1,17 @@
 package rqp
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 // Query the main struct of package
@@ -102,7 +107,6 @@ func (q *Query) SetDelimiterOR(d string) *Query {
 // When "fields" empty or not provided: `*`.
 //
 // When "fields=id,email": `id, email`.
-//
 func (q *Query) FieldsString() string {
 	if len(q.Fields) == 0 {
 		return "*"
@@ -117,7 +121,6 @@ func (q *Query) FieldsString() string {
 // When "fields" empty or not provided: `*`
 //
 // When "fields=id,email": `id, email`
-//
 func (q *Query) Select() string {
 	if len(q.Fields) == 0 {
 		return "*"
@@ -133,7 +136,6 @@ func (q *Query) Select() string {
 // When "fields" empty or not provided: `SELECT *`.
 //
 // When "fields=id,email": `SELECT id, email`.
-//
 func (q *Query) SELECT() string {
 	if len(q.Fields) == 0 {
 		return "SELECT *"
@@ -155,7 +157,6 @@ func (q *Query) AddField(field string) *Query {
 // OFFSET returns word OFFSET with number
 //
 // Return example: ` OFFSET 0`
-//
 func (q *Query) OFFSET() string {
 	if q.Offset > 0 {
 		return fmt.Sprintf(" OFFSET %d", q.Offset)
@@ -166,7 +167,6 @@ func (q *Query) OFFSET() string {
 // LIMIT returns word LIMIT with number
 //
 // Return example: ` LIMIT 100`
-//
 func (q *Query) LIMIT() string {
 	if q.Limit > 0 {
 		return fmt.Sprintf(" LIMIT %d", q.Limit)
@@ -455,9 +455,10 @@ type Replacer map[string]string
 // Parameter is a map[string]string which means map[currentName]newName.
 // The library provide beautiful way by using special type rqp.Replacer.
 // Example:
-//   rqp.ReplaceNames(rqp.Replacer{
-//	   "user_id": "users.user_id",
-//   })
+//
+//	  rqp.ReplaceNames(rqp.Replacer{
+//		   "user_id": "users.user_id",
+//	  })
 func (q *Query) ReplaceNames(r Replacer) {
 
 	for name, newname := range r {
@@ -526,7 +527,6 @@ func (q *Query) Where() string {
 // WHERE returns list of filters for WHERE SQL statement with `WHERE` word
 //
 // Return example: ` WHERE id > 0 AND email LIKE 'some@email.com'`
-//
 func (q *Query) WHERE() string {
 
 	if len(q.Filters) == 0 {
@@ -574,6 +574,97 @@ func (q *Query) SQL(table string) string {
 	)
 }
 
+func (q *Query) MongoProjection() bson.D {
+	var projection bson.D
+
+	if len(q.Fields) > 0 {
+		for _, fieldName := range q.Fields {
+			projection = append(projection, bson.E{Key: fieldName, Value: 1})
+		}
+	}
+
+	return projection
+}
+
+func (q *Query) MustMongoQueryFilters() bson.M {
+	filters, _ := q.MongoQueryFilters()
+	return filters
+}
+
+func (q *Query) MongoQueryFilters() (bson.M, error) {
+	if len(q.Filters) == 0 {
+		return bson.M{}, nil
+	}
+
+	where := []bson.M{}
+	orWhere := []bson.M{}
+
+	for i := 0; i < len(q.Filters); i++ {
+		filter := q.Filters[i]
+		filterElement, err := filter.WhereMongo()
+
+		if err != nil {
+			return nil, errors.New("filter error : " + err.Error())
+		}
+
+		if filter.OR == StartOR || filter.OR == InOR || filter.OR == EndOR {
+			orWhere = append(orWhere, bson.M{filter.Name: filterElement})
+
+			if filter.OR == EndOR {
+				where = append(where, bson.M{"$or": orWhere})
+				orWhere = []bson.M{}
+			}
+		} else {
+			where = append(where, bson.M{filter.Name: filterElement})
+		}
+	}
+
+	return bson.M{"$and": where}, nil
+}
+
+func (q *Query) MongoOrder() bson.D {
+	s := bson.D{}
+
+	if len(q.Sorts) == 0 {
+		return s
+	}
+
+	for i := 0; i < len(q.Sorts); i++ {
+		direction := 1
+		if q.Sorts[i].Desc {
+			direction = -1
+		}
+		s = append(s, bson.E{Key: q.Sorts[i].By, Value: direction})
+	}
+
+	return s
+}
+
+func (q *Query) MongoAddFindOptions(o *options.FindOptions) {
+	if len(q.Sorts) > 0 {
+		o.SetSort(q.MongoOrder())
+	}
+
+	o.SetLimit(int64(q.Limit))
+	o.SetSkip(int64(q.Offset))
+}
+
+func (q *Query) MongoCollectionFind(collection *mongo.Collection, ctx context.Context) (*mongo.Cursor, error) {
+	filters, err := q.MongoQueryFilters()
+	if err != nil {
+		return nil, err
+	}
+
+	options := options.FindOptions{}
+	q.MongoAddFindOptions(&options)
+
+	return collection.Find(
+		ctx,
+		filters,
+		&options,
+	)
+}
+
 // SetUrlQuery change url in the Query for parsing
 // uses when you need provide Query from http.HandlerFunc(w http.ResponseWriter, r *http.Request)
 // you can do q.SetUrlValues(r.URL.Query())
@@ -617,6 +708,19 @@ func NewQV(q url.Values, v Validations) *Query {
 func NewParse(q url.Values, v Validations) (*Query, error) {
 	query := New().SetUrlQuery(q).SetValidations(v)
 	return query, query.Parse()
+}
+
+// NewParseReplaced creates new Query instance, Parse it and replace names
+func NewParseReplaced(q url.Values, v Validations, r Replacer) (query *Query, err error) {
+	query, err = NewParse(q, v)
+
+	// If no error
+	if err == nil {
+		// Do replacement
+		query.ReplaceNames(r)
+	}
+
+	return
 }
 
 // Parse parses the query of URL

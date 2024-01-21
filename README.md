@@ -1,17 +1,11 @@
 # Query Parser for REST
 
-<a href="https://awesome-go.com/"><img align="right" src="https://github.com/avelino/awesome-go/raw/main/tmpl/assets/logo.png" alt="awesome-go" title="awesome-go" /></a>
-
-[![GoDoc](https://godoc.org/github.com/timsolov/rest-query-parser?status.png)](https://godoc.org/github.com/timsolov/rest-query-parser)
-[![Coverage Status](https://coveralls.io/repos/github/timsolov/rest-query-parser/badge.svg?branch=master)](https://coveralls.io/github/timsolov/rest-query-parser?branch=master)
-[![Awesome](https://cdn.rawgit.com/sindresorhus/awesome/d7305f38d29fed78fa85652e3a63e154dd8e8829/media/badge.svg)](https://github.com/sindresorhus/awesome)
-
-Query Parser is a library for easy building dynamic SQL queries to Database. It provides a simple API for web-applications which needs to do some filtering throught GET queries. It is a connector between the HTTP handler and the DB engine, and manages validations and translations for user inputs.
+Query Parser is a library for easy building dynamic SQL queries to Database and Mongo queries to MongoDB Collection. It provides a simple API for web-applications which needs to do some filtering throught GET queries. It is a connector between the HTTP handler and the DB engine, and manages validations and translations for user inputs.
 
 
 
 ## Installation
-    go get -u github.com/timsolov/rest-query-parser
+    go get -u github.com/craimbault/qo-rqp-mongo
 
 ## Idea
 
@@ -106,5 +100,74 @@ This is simple example to show logic which you can extend.
         q.ReplaceNames(rqp.Replacer{"created_at": "DATE(created_at)"})
 
         fmt.Println(q.SQL("table")) // SELECT * FROM table WHERE DATE(created_at) = ?
+    }
+```
+
+## MongoDB usage
+
+To use it with MongoDB, simply call the find method on the collection.
+
+```go
+    package main
+    
+    import (
+        "errors"
+        "fmt"
+        "net/url"
+    
+        rqp "github.com/timsolov/rest-query-parser"
+    )
+    
+    func main() {
+        url, _ := url.Parse("http://localhost/?sort=+name_test,-id&limit=10&id[in]=64e9c6d61209c16ffaa3062e,64e9c6d61209c16ffaa3062f&i[gte]=5&s[in]=one,two&email[like]=tim|name_test[like]=*tim*")
+        q, err := rqp.NewParseReplaced(
+            url.Query(), 
+            rqp.Validations{
+                // FORMAT: [field name] : [ ValidationFunc | nil ]
+
+                // validation will work if field will be provided in the Query part of the URL
+                // but if you add ":required" tag the Parser raise an Error if the field won't be in the Query part
+
+                // special system fields: fields, limit, offset, sort
+                // filters "fields" and "sort" must be always validated
+                // If you won't define ValidationFunc but include "fields" or "sort" parameter to the URL the Parser raises an Error
+                "limit:required": rqp.MinMax(10, 100),       // limit must present in the Query part and must be between 10 and 100 (default: Min(1))
+                "sort":           rqp.In("id", "name_test"), // sort could be or not in the query but if it is present it must be equal to "in" or "name"
+
+                "s":          rqp.In("one", "two"), // filter: s - string and equal
+                "id:mongoid": nil,                  // filter: id is mongoid without additional validation
+                "i:int": func(value interface{}) error { // filter: custom func for validating
+                    if value.(int) > 1 && value.(int) < 10 {
+                        return nil
+                    }
+                    return errors.New("i: must be greater then 1 and lower then 10")
+                },
+                "email":     nil,
+                "name_test": nil,
+            },
+            rqp.Replacer{"name_test": "name"},
+        )
+
+        q.AddValidation("fields", rqp.In("id", "name"))
+        q.SetUrlString("http://localhost/?fields=id,name&limit=10")
+        q.Parse()
+
+        mongoQueryFilters, mongoQueryFiltersErr = q.MongoQueryFilters()
+        if mongoQueryFiltersErr != nil {
+            fmt.Println("ERR : Mongo Filters error :", mongoQueryFiltersErr.Error())
+        } else {
+            fmt.Println("Mongo Filters : ", mongoQueryFilters)
+            fmt.Println("Mongo Projection : ", q.MongoProjection())
+            fmt.Println("Mongo Order : ", q.MongoOrder())
+
+            // cur, err := q.MongoCollectionFind(collection, ctx)
+            // if err != nil {
+            //     fmt.Println("Mongo ERR :", err.Error())
+            // } else {
+            //     for cur.Next(ctx) {
+            //         fmt.Println("Mongo Result :", cur.Current)
+            // }
+            }
+        }
     }
 ```
