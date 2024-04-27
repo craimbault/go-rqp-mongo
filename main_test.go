@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func TestSetDelimiterOR(t *testing.T) {
@@ -170,6 +172,7 @@ func TestSort(t *testing.T) {
 		{url: "?sort=+id", expected: " ORDER BY id"},
 		{url: "?sort=-id", expected: " ORDER BY id DESC"},
 		{url: "?sort=id,-name", expected: " ORDER BY id, name DESC"},
+		{url: "?sort=id,+name", expected: " ORDER BY id, name"},
 	}
 	for _, c := range cases {
 		t.Run(c.url, func(t *testing.T) {
@@ -334,6 +337,231 @@ func TestWhere3(t *testing.T) {
 	assert.Equal(t, where, "(test1 = ? OR test2 = ?) AND (test1 = ? OR test2 = ?)")
 }
 
+func TestWhereMongo(t *testing.T) {
+	testId := primitive.NewObjectID()
+	testId2 := primitive.NewObjectID()
+	cases := []struct {
+		url       string
+		expected  []primitive.M
+		expected2 []primitive.M
+		err       string
+		ignore    bool
+	}{
+		{url: "?"},
+		{url: "?id", err: "id: empty value"},
+		{url: "?id=", err: "id: empty value"},
+		{url: "?u=", err: "u: empty value"},
+		{url: "?id=1.2", err: "id: bad format"},
+		{url: "?a[in]=1.2", err: "a[in]: bad format"},
+		{url: "?a[in]=1.2,1.2", err: "a[in]: bad format"},
+		{url: "?a[nin]=1.2", err: "a[nin]: bad format"},
+		{url: "?a[nin]=1.2,1.2", err: "a[nin]: bad format"},
+		{url: "?a[test]=1", err: "a[test]: unknown method"},
+		{url: "?a[like]=1", err: "a[like]: method are not allowed"},
+		{url: "?id=1,2", err: "id: method are not allowed"},
+		{url: "?id=" + testId.Hex(), expected: []primitive.M{{"_id": testId}}},
+		{url: "?id[in]=" + testId.Hex() + "," + testId2.Hex(), expected: []primitive.M{{"_id": primitive.M{"$in": primitive.A{testId, testId2}}}}, expected2: []primitive.M{{"_id": primitive.M{"$in": primitive.A{testId2, testId}}}}},
+
+		{url: "?a=100", err: "a: can't be greater then 10"},
+		{url: "?a[in]=100,200", err: "a[in]: can't be greater then 10"},
+		{url: "?a[nin]=100,200", err: "a[nin]: can't be greater then 10"},
+
+		// not like, not ilike:
+		{url: "?u[nlike]=*superman", expected: []primitive.M{{"u": primitive.M{"$not": primitive.M{"$regex": primitive.Regex{Pattern: "superman$"}}}}}},
+		{url: "?u[nlike]=superman*", expected: []primitive.M{{"u": primitive.M{"$not": primitive.M{"$regex": primitive.Regex{Pattern: "^superman"}}}}}},
+		{url: "?u[nlike]=superman", expected: []primitive.M{{"u": primitive.M{"$not": primitive.M{"$regex": primitive.Regex{Pattern: "^superman$"}}}}}},
+		{url: "?u[nilike]=*superman", expected: []primitive.M{{"u": primitive.M{"$not": primitive.M{"$regex": primitive.Regex{Pattern: "superman$", Options: "i"}}}}}},
+		{url: "?u[nilike]=superman*", expected: []primitive.M{{"u": primitive.M{"$not": primitive.M{"$regex": primitive.Regex{Pattern: "^superman", Options: "i"}}}}}},
+		{url: "?u[nilike]=superman", expected: []primitive.M{{"u": primitive.M{"$not": primitive.M{"$regex": primitive.Regex{Pattern: "^superman$", Options: "i"}}}}}},
+
+		{url: "?id=" + testId.Hex() + "&name=superman", expected: []primitive.M{{"_id": testId}}, ignore: true},
+		{url: "?id=" + testId.Hex() + "&name=superman&s[like]=super", expected: []primitive.M{{"_id": testId}, {"s": primitive.M{"$regex": primitive.Regex{Pattern: "^super$"}}}}, expected2: []primitive.M{{"s": primitive.M{"$regex": primitive.Regex{Pattern: "^super$"}}}, {"_id": testId}}, ignore: true},
+		{url: "?s=super", expected: []primitive.M{{"s": "super"}}},
+		{url: "?s[in]=super,puper", err: "s[in]: puper: not in scope"},
+		{url: "?s[in]=super,best", expected: []primitive.M{{"s": primitive.M{"$in": primitive.A{"super", "best"}}}}},
+		{url: "?s[nin]=super,puper", err: "s[nin]: puper: not in scope"},
+		{url: "?s[nin]=super,best", expected: []primitive.M{{"s": primitive.M{"$nin": primitive.A{"super", "best"}}}}},
+		{url: "?s=puper", expected: nil, err: "s: puper: not in scope"},
+		{url: "?u=puper", expected: []primitive.M{{"u": "puper"}}},
+		{url: "?u[eq]=1,2", expected: nil, err: "u[eq]: method are not allowed"},
+		{url: "?a[gt]=1", expected: []primitive.M{{"a": primitive.M{"$gt": 1}}}},
+		{url: "?a[in]=1,2", expected: []primitive.M{{"a": primitive.M{"$in": primitive.A{1, 2}}}}},
+		{url: "?a[eq]=1&a[eq]=4", expected: []primitive.M{{"a": 1}, {"a": 4}}, expected2: []primitive.M{{"a": 4}, {"a": 1}}},
+		{url: "?a[gte]=1&a[lte]=4", expected: []primitive.M{{"a": primitive.M{"$gte": 1}}, {"a": primitive.M{"$lte": 4}}}, expected2: []primitive.M{{"a": primitive.M{"$lte": 4}}, {"a": primitive.M{"$gte": 1}}}},
+		{url: "?a[gte]=1|a[lte]=4", expected: []primitive.M{{"$or": []primitive.M{{"a": primitive.M{"$gte": 1}}, {"a": primitive.M{"$lte": 4}}}}}, expected2: []primitive.M{{"$or": []primitive.M{{"a": primitive.M{"$lte": 4}}, {"a": primitive.M{"$gte": 1}}}}}},
+		// null:
+		{url: "?u[not]=NULL", expected: []primitive.M{{"u": primitive.M{"$exists": true}}}},
+		{url: "?u[is]=NULL", expected: []primitive.M{{"u": primitive.M{"$exists": false}}}},
+		// bool:
+		{url: "?b=true", expected: []primitive.M{{"b": true}}},
+		{url: "?b=true1", err: "b: bad format"},
+		{url: "?b[not]=true", err: "b[not]: method are not allowed"},
+		{url: "?b[eq]=true,false", err: "b[eq]: method are not allowed"},
+	}
+	for _, c := range cases {
+		t.Run(c.url, func(t *testing.T) {
+			URL, err := url.Parse(c.url)
+			assert.NoError(t, err)
+
+			q := NewQV(URL.Query(), Validations{
+				"id:mongoid": nil,
+				"s": In(
+					"super",
+					"best",
+				),
+				"a:int": func(value interface{}) error {
+					if value.(int) > 10 {
+						return errors.New("can't be greater then 10")
+					}
+					return nil
+				},
+				"u:string": nil,
+				"b:bool":   nil,
+				"custom": func(value interface{}) error {
+					return nil
+				},
+			}).IgnoreUnknownFilters(c.ignore)
+
+			err = q.Parse()
+
+			if len(c.err) > 0 {
+				assert.EqualError(t, err, c.err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			mongoQueryFilters, mongoQueryFiltersErr := q.MongoQueryFilters()
+
+			// No errors
+			assert.Nil(t, mongoQueryFiltersErr)
+
+			t.Log(q, mongoQueryFilters)
+			if c.expected != nil {
+				assert.True(t,
+					assert.ObjectsAreEqual(primitive.M{"$and": c.expected}, mongoQueryFilters) ||
+						assert.ObjectsAreEqual(primitive.M{"$and": c.expected2}, mongoQueryFilters))
+			}
+
+			QueryEqual(t, q, q.Clone())
+		})
+	}
+}
+
+func TestMustWhereMongo(t *testing.T) {
+	testId := primitive.NewObjectID()
+	cases := []struct {
+		url       string
+		expected  []primitive.M
+		expected2 []primitive.M
+		err       string
+		ignore    bool
+	}{
+		{url: "?id=" + testId.Hex(), expected: []primitive.M{{"_id": testId}}},
+	}
+	for _, c := range cases {
+		t.Run(c.url, func(t *testing.T) {
+			URL, err := url.Parse(c.url)
+			assert.NoError(t, err)
+
+			q := NewQV(URL.Query(), Validations{
+				"id:mongoid": nil,
+				"s": In(
+					"super",
+					"best",
+				),
+				"a:int": func(value interface{}) error {
+					if value.(int) > 10 {
+						return errors.New("can't be greater then 10")
+					}
+					return nil
+				},
+				"u:string": nil,
+				"b:bool":   nil,
+				"custom": func(value interface{}) error {
+					return nil
+				},
+			}).IgnoreUnknownFilters(c.ignore)
+
+			err = q.Parse()
+
+			if len(c.err) > 0 {
+				assert.EqualError(t, err, c.err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			mongoQueryFilters := q.MustMongoQueryFilters()
+
+			t.Log(q, mongoQueryFilters)
+			if c.expected != nil {
+				assert.True(t,
+					assert.ObjectsAreEqual(primitive.M{"$and": c.expected}, mongoQueryFilters) ||
+						assert.ObjectsAreEqual(primitive.M{"$and": c.expected2}, mongoQueryFilters))
+			}
+
+			QueryEqual(t, q, q.Clone())
+		})
+	}
+}
+
+func TestMongoAddFindOptions(t *testing.T) {
+	testId := primitive.NewObjectID()
+	cases := []struct {
+		url    string
+		limit  int64
+		skip   int64
+		sort   primitive.D
+		err    string
+		ignore bool
+	}{
+		{url: "?id=" + testId.Hex() + "&sort=+id", sort: primitive.D{primitive.E{Key: "id", Value: 1}}},
+		{url: "?id=" + testId.Hex() + "&sort=-id", sort: primitive.D{primitive.E{Key: "id", Value: -1}}},
+		{url: "?id=" + testId.Hex() + "&limit=15", limit: 15},
+		{url: "?id=" + testId.Hex() + "&offset=14", skip: 14},
+	}
+	for _, c := range cases {
+		t.Run(c.url, func(t *testing.T) {
+			URL, err := url.Parse(c.url)
+			assert.NoError(t, err)
+
+			q := NewQV(URL.Query(), Validations{
+				"id:mongoid": nil,
+				"limit":      MinMax(10, 100),
+				"skip":       MinMax(10, 100),
+				"offset":     nil,
+				"sort":       In("id", "name_test"),
+			}).IgnoreUnknownFilters(c.ignore)
+
+			err = q.Parse()
+
+			if len(c.err) > 0 {
+				assert.EqualError(t, err, c.err)
+			} else {
+				assert.NoError(t, err)
+			}
+
+			o := mongooptions.FindOptions{}
+			q.MongoAddFindOptions(&o)
+
+			t.Log(q, o.Limit)
+
+			if c.limit != 0 {
+				assert.Equal(t, c.limit, *o.Limit)
+			}
+
+			if c.skip != 0 {
+				assert.Equal(t, c.skip, *o.Skip)
+			}
+
+			if c.sort != nil {
+				assert.Equal(t, c.sort, o.Sort)
+			}
+
+			QueryEqual(t, q, q.Clone())
+		})
+	}
+}
+
 func TestArgs(t *testing.T) {
 	q := New()
 	q.SetDelimiterIN("!")
@@ -458,6 +686,16 @@ func TestAddFilter(t *testing.T) {
 	assert.Len(t, q.Filters, 1)
 	assert.True(t, q.HaveFilter("test"))
 	assert.Equal(t, "test = ?", q.Where())
+}
+
+func TestSetOffset(t *testing.T) {
+	q := New().SetOffset(10)
+	assert.Equal(t, q.Offset, 10)
+}
+
+func TestSetLimit(t *testing.T) {
+	q := New().SetLimit(10)
+	assert.Equal(t, q.Limit, 10)
 }
 
 func Test_ignoreUnknown(t *testing.T) {

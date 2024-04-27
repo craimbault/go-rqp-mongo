@@ -1,7 +1,6 @@
 package rqp
 
 import (
-	"context"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -10,7 +9,6 @@ import (
 	"github.com/pkg/errors"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
@@ -462,9 +460,9 @@ type Replacer map[string]string
 func (q *Query) ReplaceNames(r Replacer) {
 
 	for name, newname := range r {
-		for i, v := range q.Filters {
-			if v.Name == name {
-				q.Filters[i].Name = newname
+		for _, f := range q.Filters {
+			if f.Name == name {
+				f.Name = newname
 			}
 		}
 		for i, v := range q.Fields {
@@ -472,8 +470,8 @@ func (q *Query) ReplaceNames(r Replacer) {
 				q.Fields[i] = newname
 			}
 		}
-		for i, v := range q.Sorts {
-			if v.By == name {
+		for i, s := range q.Sorts {
+			if s.By == name {
 				q.Sorts[i].By = newname
 			}
 		}
@@ -574,18 +572,6 @@ func (q *Query) SQL(table string) string {
 	)
 }
 
-func (q *Query) MongoProjection() bson.D {
-	var projection bson.D
-
-	if len(q.Fields) > 0 {
-		for _, fieldName := range q.Fields {
-			projection = append(projection, bson.E{Key: fieldName, Value: 1})
-		}
-	}
-
-	return projection
-}
-
 func (q *Query) MustMongoQueryFilters() bson.M {
 	filters, _ := q.MongoQueryFilters()
 	return filters
@@ -602,6 +588,8 @@ func (q *Query) MongoQueryFilters() (bson.M, error) {
 	for i := 0; i < len(q.Filters); i++ {
 		filter := q.Filters[i]
 		filterElement, err := filter.WhereMongo()
+
+		// log.Println("MongoQueryFilters Filter : ", filter)
 
 		if err != nil {
 			return nil, errors.New("filter error : " + err.Error())
@@ -647,22 +635,6 @@ func (q *Query) MongoAddFindOptions(o *options.FindOptions) {
 
 	o.SetLimit(int64(q.Limit))
 	o.SetSkip(int64(q.Offset))
-}
-
-func (q *Query) MongoCollectionFind(collection *mongo.Collection, ctx context.Context) (*mongo.Cursor, error) {
-	filters, err := q.MongoQueryFilters()
-	if err != nil {
-		return nil, err
-	}
-
-	options := options.FindOptions{}
-	q.MongoAddFindOptions(&options)
-
-	return collection.Find(
-		ctx,
-		filters,
-		&options,
-	)
 }
 
 // SetUrlQuery change url in the Query for parsing
@@ -937,10 +909,8 @@ func (q *Query) parseSort(value []string, validate ValidationFunc) error {
 			desc = false
 		}
 
-		if validate != nil {
-			if err := validate(by); err != nil {
-				return err
-			}
+		if err := validate(by); err != nil {
+			return err
 		}
 
 		sort = append(sort, Sort{
@@ -970,11 +940,9 @@ func (q *Query) parseFields(value []string, validate ValidationFunc) error {
 
 	list = cleanSliceString(list)
 
-	if validate != nil {
-		for _, v := range list {
-			if err := validate(v); err != nil {
-				return err
-			}
+	for _, v := range list {
+		if err := validate(v); err != nil {
+			return err
 		}
 	}
 

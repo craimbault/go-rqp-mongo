@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	rqp "github.com/craimbault/go-rqp-mongo"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -27,10 +28,11 @@ func init() {
 
 func main() {
 
+	testId := primitive.NewObjectID()
 	// Filter is parameter provided in the Query part of the URL
 	//   The lib handles system filters:
 	//     * fields - list of fields separated by comma (",") for SELECT statement. Should be validated.
-	//     * sort   - list of fields separated by comma (",") for ORDER BY statement. Should be validated. Could includes prefix +/- which means ASC/DESC sorting. Eg. &sort=-id will be ORDER BY id DESC.
+	//     * sort   - list of fields separated by comma (",") for 	DER BY statement. Should be validated. Could includes prefix +/- which means ASC/DESC sorting. Eg. &sort=-id will be ORDER BY id DESC.
 	//     * limit  - number for LIMIT statement. Should be greater then 0 by default.
 	//     * offset - number for OFFSET statement. Should be greater then or equal to 0 by default.
 	//   and user defined filters.
@@ -39,10 +41,12 @@ func main() {
 	//
 	// Field is enumerated in the Filter "fields" field which lib must put into SELECT statement.
 
-	url, _ := url.Parse("http://localhost/?sort=+name_test,-id&limit=10&id[in]=64e9c6d61209c16ffaa3062e,64e9c6d61209c16ffaa3062f&i[gte]=5&s[in]=one,two&email[like]=tim|name_test[like]=*tim*")
+	// url, _ := url.Parse("http://localhost/?sort=+name_test,-id&limit=10&id[in]=64e9c6d61209c16ffaa3062e,64e9c6d61209c16ffaa3062f&i[gte]=5&s[in]=one,two&email[like]=tim|name_test[like]=*tim*")
 	// url, _ := url.Parse("http://localhost/?sort=-name,-id&limit=10&i[gte]=5&s=one|s=two&email[like]=*tim*|name[like]=*tim*")
 	// url, _ := url.Parse("http://localhost/?sort=+name,-id&limit=10&i[gte]=5&s[eq]=one&name[like]=*tim*")
 	// url, _ := url.Parse("http://localhost/?sort=+name,-id&limit=10&i[gte]=2&s[eq]=one")
+	// url, _ := url.Parse("http://localhost/?id=1,2")
+	url, _ := url.Parse("http://localhost/?id=" + testId.Hex() + "&limit=10")
 	q, err := rqp.NewParseReplaced(
 		url.Query(),
 		rqp.Validations{
@@ -59,6 +63,7 @@ func main() {
 
 			"s":          rqp.In("one", "two"), // filter: s - string and equal
 			"id:mongoid": nil,                  // filter: id is mongoid without additional validation (can be int for SQL)
+			// "id:int": nil, // filter: id is mongoid without additional validation (can be int for SQL)
 			"i:int": func(value interface{}) error { // filter: custom func for validating
 				if value.(int) > 1 && value.(int) < 10 {
 					return nil
@@ -83,10 +88,10 @@ func main() {
 		fmt.Println("ERR : Mongo Filters error :", mongoQueryFiltersErr.Error())
 	} else {
 		fmt.Println("Mongo Filters : ", mongoQueryFilters)
-		fmt.Println("Mongo Projection : ", q.MongoProjection())
+		// fmt.Println("Mongo Projection : ", q.MongoProjection())
 		fmt.Println("Mongo Order : ", q.MongoOrder())
 
-		cur, err := q.MongoCollectionFind(collection, ctx)
+		cur, err := MongoCollectionFind(collection, ctx, q)
 		if err != nil {
 			fmt.Println("Mongo ERR :", err.Error())
 		} else {
@@ -111,7 +116,7 @@ func main() {
 		fmt.Println("ERR : Mongo Filters error :", mongoQueryFiltersErr.Error())
 	} else {
 		fmt.Println("Mongo Filters : ", mongoQueryFilters)
-		fmt.Println("Mongo Projection : ", q.MongoProjection())
+		// fmt.Println("Mongo Projection : ", q.MongoProjection())
 		fmt.Println("Mongo Order : ", q.MongoOrder())
 
 		// cur, err := q.MongoCollectionFind(collection, ctx)
@@ -136,7 +141,7 @@ func main() {
 		fmt.Println("ERR : Mongo Filters error :", mongoQueryFiltersErr.Error())
 	} else {
 		fmt.Println("Mongo Filters : ", mongoQueryFilters)
-		fmt.Println("Mongo Projection : ", q.MongoProjection())
+		// fmt.Println("Mongo Projection : ", q.MongoProjection())
 		fmt.Println("Mongo Order : ", q.MongoOrder())
 
 		// cur, err := q.MongoCollectionFind(collection, ctx)
@@ -148,4 +153,20 @@ func main() {
 		// 	}
 		// }
 	}
+}
+
+func MongoCollectionFind(collection *mongo.Collection, ctx context.Context, q *rqp.Query) (*mongo.Cursor, error) {
+	filters, err := q.MongoQueryFilters()
+	if err != nil {
+		return nil, err
+	}
+
+	options := options.FindOptions{}
+	q.MongoAddFindOptions(&options)
+
+	return collection.Find(
+		ctx,
+		filters,
+		&options,
+	)
 }

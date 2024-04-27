@@ -27,6 +27,25 @@ func Test_Where(t *testing.T) {
 	})
 }
 
+func Test_WhereMongo(t *testing.T) {
+	t.Run("ErrUnknownMethod", func(t *testing.T) {
+		filter := Filter{
+			Key:    "id[is]",
+			Name:   "id",
+			Method: IS,
+		}
+		_, err := filter.WhereMongo()
+		assert.Equal(t, err, ErrMethodNotAllowed)
+
+		filter = Filter{
+			Key:    "id[fake]",
+			Name:   "id",
+			Method: "fake",
+		}
+		_, err = filter.WhereMongo()
+		assert.Equal(t, err, ErrUnknownMethod)
+	})
+}
 func Test_Args(t *testing.T) {
 	t.Run("ErrUnknownMethod", func(t *testing.T) {
 		filter := Filter{

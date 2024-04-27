@@ -176,13 +176,13 @@ func (f *Filter) parseKey(key string) error {
 
 // parseValue parses value depends on its type
 func (f *Filter) parseValue(valueType string, value string, delimiter string) error {
-
+	fmt.Printf("parseValue valueType[%s] value[%s] delimiter[%s]\n", valueType, value, delimiter)
 	var (
 		list []string
 		err  error
 	)
 
-	if strings.Contains(value, delimiter) && (f.Method == IN || f.Method == NIN) {
+	if strings.Contains(value, delimiter) {
 		list = strings.Split(value, delimiter)
 	} else {
 		list = append(list, value)
@@ -267,7 +267,7 @@ func (f *Filter) WhereMongo() (interface{}, error) {
 		if f.Value == NULL {
 			filterElement = bson.M{"$exists": true}
 		} else {
-			filterElement = bson.M{"$ne": f.Value}
+			err = ErrMethodNotAllowed
 		}
 	case IS:
 		if f.Value == NULL {
@@ -294,6 +294,7 @@ func (f *Filter) Args() ([]interface{}, error) {
 
 	switch f.Method {
 	case EQ, NE, GT, LT, GTE, LTE:
+		// if slices.Contains([]Method{GT, LT, GTE, LTE}, f.Method) {}
 		args = append(args, f.Value)
 		return args, nil
 	case IS, NOT:
